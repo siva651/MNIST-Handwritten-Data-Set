@@ -1,0 +1,425 @@
+# The complete code of MNIST HandWritten Dataset
+# STEP 0 — Setup
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, models
+from sklearn.metrics import confusion_matrix, classification_report
+import gradio as gr
+from PIL import Image
+
+# Reproducibility
+tf.random.set_seed(42)
+np.random.seed(42)
+
+print(f"TensorFlow version: {tf.__version__}")
+print(f"GPU available: {bool(tf.config.list_physical_devices('GPU'))}")
+# ============================================================
+# STEP 1 — Load & Explore the Data
+# ============================================================
+(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+
+print(f"Train shape: {x_train.shape}, Test shape: {x_test.shape}")
+
+# --- Visual 1: Sample digits ---
+fig, axes = plt.subplots(3, 8, figsize=(14, 6))
+for ax, img, label in zip(axes.flat, x_train, y_train):
+    ax.imshow(img, cmap='gray')
+    ax.set_title(str(label), fontsize=10)
+    ax.axis('off')
+fig.suptitle("Sample MNIST Digits", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+# --- Visual 2: Class balance (good to show you checked for skew) ---
+plt.figure(figsize=(8, 4))
+sns.countplot(x=y_train)
+plt.title("Class Distribution in Training Set")
+plt.xlabel("Digit")
+plt.ylabel("Count")
+plt.show()
+# ============================================================
+# STEP 2 — Preprocess
+# ============================================================
+x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+x_test  = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.0
+
+print("✅ Normalized to [0,1] and reshaped to (28, 28, 1)")
+# ============================================================
+# STEP 3 — Build the CNN
+# ============================================================
+def build_model():
+    model = models.Sequential([
+        layers.Input(shape=(28, 28, 1)),
+
+        layers.Conv2D(32, 3, activation='relu'), layers.BatchNormalization(),
+        layers.Conv2D(32, 3, activation='relu'), layers.BatchNormalization(),
+        layers.MaxPooling2D(), layers.Dropout(0.25),
+
+        layers.Conv2D(64, 3, activation='relu'), layers.BatchNormalization(),
+        layers.Conv2D(64, 3, activation='relu'), layers.BatchNormalization(),
+        layers.MaxPooling2D(), layers.Dropout(0.25),
+
+        layers.Conv2D(128, 3, activation='relu'), layers.BatchNormalization(),
+        layers.MaxPooling2D(), layers.Dropout(0.25),
+
+        layers.Flatten(),
+        layers.Dense(256, activation='relu'), layers.BatchNormalization(),
+        layers.Dropout(0.5),
+        layers.Dense(10, activation='softmax')
+    ], name="MNIST_CNN")
+
+    model.compile(optimizer='adam',
+                  loss='sparse_categorical_crossentropy',
+                  metrics=['accuracy'])
+    return model
+
+model = build_model()
+model.summary()
+
+# --- Visual: architecture diagram (great for a portfolio README) ---
+# ============================================================
+# STEP 4 — Train (with callbacks — shows ML maturity)
+# ============================================================
+callbacks = [
+    keras.callbacks.EarlyStopping(patience=3, restore_best_weights=True, monitor='val_accuracy'),
+    keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=2, monitor='val_loss')
+]
+
+history = model.fit(
+    x_train, y_train,
+    epochs=15,
+    batch_size=128,
+    validation_data=(x_test, y_test),
+    callbacks=callbacks,
+    verbose=1
+)
+
+# --- Visual: training curves ---
+fig, ax = plt.subplots(1, 2, figsize=(13, 4))
+ax[0].plot(history.history['accuracy'], label='Train')
+ax[0].plot(history.history['val_accuracy'], label='Val')
+ax[0].set_title('Accuracy'); ax[0].set_xlabel('Epoch'); ax[0].legend()
+
+ax[1].plot(history.history['loss'], label='Train')
+ax[1].plot(history.history['val_loss'], label='Val')
+ax[1].set_title('Loss'); ax[1].set_xlabel('Epoch'); ax[1].legend()
+plt.suptitle("Training History")
+plt.show()
+
+test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
+print(f"🚀 Final Test Accuracy: {test_acc*100:.2f}%")
+# ============================================================
+# STEP 5 — Evaluate in Depth
+# ============================================================
+y_pred_probs = model.predict(x_test, verbose=0)
+y_pred = np.argmax(y_pred_probs, axis=1)
+
+# --- Visual: confusion matrix ---
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=range(10), yticklabels=range(10))
+plt.title(f'Confusion Matrix — Accuracy: {test_acc*100:.2f}%')
+plt.xlabel('Predicted'); plt.ylabel('True')
+plt.show()
+
+print(classification_report(y_test, y_pred, digits=3))
+
+# --- Visual: per-class accuracy bar chart ---
+per_class_acc = cm.diagonal() / cm.sum(axis=1)
+plt.figure(figsize=(8, 4))
+sns.barplot(x=list(range(10)), y=per_class_acc, palette='Blues_d')
+plt.title("Per-Class Accuracy")
+plt.xlabel("Digit"); plt.ylabel("Accuracy"); plt.ylim(0.9, 1.0)
+plt.show()
+
+# --- Visual: misclassified examples (great talking point in interviews) ---
+wrong_idx = np.where(y_pred != y_test)[0][:15]
+plt.figure(figsize=(14, 4))
+for i, idx in enumerate(wrong_idx):
+    plt.subplot(2, 8, i+1)
+    plt.imshow(x_test[idx].reshape(28,28), cmap='gray')
+    plt.title(f"T:{y_test[idx]} P:{y_pred[idx]}", color='red', fontsize=9)
+    plt.axis('off')
+plt.suptitle("Misclassified Examples")
+plt.tight_layout()
+plt.show()
+# ============================================================
+# STEP 6 — Interpretability: What Does the CNN "See"?
+# ============================================================
+first_conv = next(l for l in model.layers if isinstance(l, layers.Conv2D))
+
+feature_extractor = keras.Model(inputs=model.inputs, outputs=first_conv.output)
+sample_img = x_test[0:1]
+activations = feature_extractor.predict(sample_img, verbose=0)
+
+plt.figure(figsize=(12, 6))
+for i in range(min(8, activations.shape[-1])):
+    plt.subplot(2, 4, i+1)
+    plt.imshow(activations[0, :, :, i], cmap='viridis')
+    plt.title(f'Filter {i+1}')
+    plt.axis('off')
+plt.suptitle(f"Feature Maps from '{first_conv.name}'")
+plt.tight_layout()
+plt.show()
+# ============================================================
+# STEP 7 — Save the Model
+# ============================================================
+model.save('mnist_cnn.keras')
+print("✅ Model saved as mnist_cnn.keras")
+# ============================================================
+# STEP 8 — Interactive Demo (Gradio)
+# Two input modes: draw a digit live, or upload an image.
+# ============================================================
+# ------------------------------------------------------------
+# Load the trained model (don't rely on notebook memory)
+# ------------------------------------------------------------
+import os
+
+if 'model' not in dir() or not isinstance(model, tf.keras.Model):
+    print("⚠️ No trained model found in memory — loading from disk...")
+    model = tf.keras.models.load_model('mnist_cnn.keras')
+else:
+    print("✅ Using model already in memory")
+
+# Sanity check: confirm the model is actually trained, not random weights
+sanity_probs = model.predict(x_test[0:1], verbose=0)[0]
+print(f"Sanity check on a known test digit ({y_test[0]}): "
+      f"predicted={np.argmax(sanity_probs)}, confidence={np.max(sanity_probs)*100:.1f}%")
+if np.max(sanity_probs) < 0.5:
+    print("🚨 WARNING: Low confidence on a known test image — model may be untrained!")
+
+
+import gradio as gr
+import numpy as np
+from PIL import Image
+from scipy import ndimage
+import matplotlib.pyplot as plt
+
+print(f"Gradio version: {gr.__version__}")
+
+# ------------------------------------------------------------
+# Preprocessing
+# ------------------------------------------------------------
+
+def to_pil(img):
+    """Normalize whatever Gradio hands us (dict, ndarray, or PIL) into a grayscale PIL Image,
+    correctly flattening transparency onto a white background."""
+    if img is None:
+        return None
+
+    # Sketchpad / ImageEditor in Gradio 5.x returns a dict
+    if isinstance(img, dict):
+        candidate = img.get("composite")
+        if candidate is None:
+            candidate = img.get("background")
+        if candidate is None:
+            layers = img.get("layers")
+            candidate = layers[0] if layers else None
+        img = candidate
+
+    if img is None:
+        return None
+
+    if isinstance(img, np.ndarray):
+        if img.size == 0:
+            return None
+        img = Image.fromarray(img.astype('uint8'))
+
+    # Critical fix: flatten transparency onto white BEFORE dropping alpha,
+    # otherwise transparent pixels can turn black once alpha is discarded.
+    if img.mode in ("RGBA", "LA"):
+        background = Image.new("RGB", img.size, (255, 255, 255))
+        alpha = img.split()[-1]
+        background.paste(img.convert("RGB"), mask=alpha)
+        img = background
+
+    return img.convert("L")
+
+
+def center_on_canvas(arr, size=28, digit_size=20):
+    """Crop to the digit's bounding box, resize, and center — mimics MNIST's own preprocessing."""
+    coords = np.argwhere(arr > 0.05)
+    if coords.size == 0:
+        return np.zeros((size, size), dtype='float32')
+
+    y0, x0 = coords.min(axis=0)
+    y1, x1 = coords.max(axis=0) + 1
+    cropped = arr[y0:y1, x0:x1]
+
+    h, w = cropped.shape
+    scale = digit_size / max(h, w)
+    new_h, new_w = max(1, int(h * scale)), max(1, int(w * scale))
+    cropped_img = Image.fromarray((cropped * 255).astype('uint8')).resize(
+        (new_w, new_h), Image.Resampling.LANCZOS
+    )
+    resized = np.array(cropped_img).astype('float32') / 255.0
+
+    canvas = np.zeros((size, size), dtype='float32')
+    top = (size - new_h) // 2
+    left = (size - new_w) // 2
+    canvas[top:top + new_h, left:left + new_w] = resized
+
+    cy, cx = ndimage.center_of_mass(canvas)
+    if not (np.isnan(cy) or np.isnan(cx)):
+        shift_y, shift_x = int(size / 2 - cy), int(size / 2 - cx)
+        canvas = ndimage.shift(canvas, (shift_y, shift_x), cval=0)
+    return canvas
+
+
+def preprocess(img) -> np.ndarray:
+    pil_img = to_pil(img)
+    if pil_img is None:
+        return None
+
+    arr = np.array(pil_img).astype('float32') / 255.0
+
+    # Auto-invert: MNIST wants a light digit on a dark background.
+    if arr.mean() > 0.5:
+        arr = 1.0 - arr
+
+    arr = center_on_canvas(arr)
+    return arr.reshape(1, 28, 28, 1)
+
+
+# ------------------------------------------------------------
+# Prediction
+# ------------------------------------------------------------
+
+def predict(img):
+    if img is None:
+        print("⚠️ predict() received None")
+        return None, None
+
+    x = preprocess(img)
+    if x is None:
+        print("⚠️ preprocess() returned None — check to_pil() logic")
+        return None, None
+
+    probs = model.predict(x, verbose=0)[0]
+    pred, conf = int(np.argmax(probs)), float(np.max(probs)) * 100
+
+    fig, ax = plt.subplots(figsize=(5, 3))
+    ax.bar(range(10), probs, color=['#4C72B0' if i != pred else '#DD8452' for i in range(10)])
+    ax.set_xticks(range(10))
+    ax.set_ylim(0, 1)
+    ax.set_title(f"Prediction: {pred}  ({conf:.1f}% confident)")
+    plt.tight_layout()
+
+    return fig, x.reshape(28, 28)
+
+
+# ------------------------------------------------------------
+# UI
+# ------------------------------------------------------------
+
+with gr.Blocks(title="Handwritten Digit Classifier") as demo:
+    gr.Markdown("# 🔢 Handwritten Digit Classifier\nCNN trained on MNIST — draw a digit or upload an image.")
+
+    with gr.Tab("✏️ Draw"):
+        if hasattr(gr, "Sketchpad"):
+            sketch = gr.Sketchpad(type="pil", label="Draw a digit (0-9)")
+        else:
+            sketch = gr.Image(source="canvas", tool="sketch", type="pil", label="Draw a digit (0-9)")
+        btn1 = gr.Button("Predict", variant="primary")
+
+    with gr.Tab("📁 Upload"):
+        upload = gr.Image(type="pil", label="Upload an image", sources=["upload", "clipboard"])
+        btn2 = gr.Button("Predict", variant="primary")
+
+    with gr.Row():
+        out_chart = gr.Plot(label="Prediction Confidence")
+        out_processed = gr.Image(label="What the model sees (28x28)")
+
+    btn1.click(predict, inputs=sketch, outputs=[out_chart, out_processed])
+    btn2.click(predict, inputs=upload, outputs=[out_chart, out_processed])
+    upload.change(predict, inputs=upload, outputs=[out_chart, out_processed])
+
+demo.launch(share=True, debug=True)
+# ============================================================
+# STEP 9 — Multi-Digit Recognition (e.g. phone numbers)
+# ============================================================
+
+import cv2
+
+def segment_digits(pil_img, min_area=50):
+    """Find individual digit bounding boxes in an image, left to right."""
+    arr = np.array(pil_img.convert("L"))
+
+    # Flatten transparency issue is already handled upstream by to_pil()
+    # Auto-invert so digits are white on black for contour detection
+    if arr.mean() > 127:
+        arr = 255 - arr
+
+    # Threshold to a clean binary image
+    _, thresh = cv2.threshold(arr.astype('uint8'), 50, 255, cv2.THRESH_BINARY)
+
+    # Dilate slightly so broken strokes (like a loose "5") merge into one blob
+    kernel = np.ones((3, 3), np.uint8)
+    thresh = cv2.dilate(thresh, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    for c in contours:
+        x, y, w, h = cv2.boundingRect(c)
+        if w * h >= min_area:
+            boxes.append((x, y, w, h))
+
+    # Sort left to right (reading order)
+    boxes.sort(key=lambda b: b[0])
+    return boxes, arr
+
+
+def predict_multi_digit(img):
+    pil_img = to_pil(img)
+    if pil_img is None:
+        return None, "Draw or upload a sequence of digits."
+
+    boxes, arr_normalized = segment_digits(pil_img)
+    if not boxes:
+        return None, "No digits detected — try drawing bolder strokes."
+
+    predictions = []
+    vis_img = np.array(pil_img.convert("RGB"))
+
+    for (x, y, w, h) in boxes:
+        # Pad a bit around each digit before feeding to the single-digit pipeline
+        pad = int(0.2 * max(w, h))
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(arr_normalized.shape[1], x + w + pad), min(arr_normalized.shape[0], y + h + pad)
+
+        crop = pil_img.crop((x0, y0, x1, y1))
+        x_input = preprocess(crop)  # reuses your existing single-digit preprocessing
+        probs = model.predict(x_input, verbose=0)[0]
+        pred = int(np.argmax(probs))
+        predictions.append(pred)
+
+        # Draw box + label for visualization
+        cv2.rectangle(vis_img, (x0, y0), (x1, y1), (255, 0, 0), 2)
+        cv2.putText(vis_img, str(pred), (x0, max(0, y0 - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+
+    number_str = "".join(map(str, predictions))
+    return vis_img, f"🔢 Detected sequence: **{number_str}**"
+
+
+# --- Gradio UI ---
+with gr.Blocks(title="Multi-Digit Recognizer") as demo_multi:
+    gr.Markdown("# 🔢📞 Multi-Digit Recognizer\nDraw or upload a sequence of digits (e.g. a phone number).")
+    with gr.Tab("✏️ Draw"):
+        sketch_multi = gr.Sketchpad(type="pil", label="Draw a number sequence")
+        btn_multi1 = gr.Button("Predict", variant="primary")
+    with gr.Tab("📁 Upload"):
+        upload_multi = gr.Image(type="pil", label="Upload an image")
+        btn_multi2 = gr.Button("Predict", variant="primary")
+
+    out_boxes = gr.Image(label="Detected Digits")
+    out_text = gr.Textbox(label="Recognized Sequence")
+
+    btn_multi1.click(predict_multi_digit, inputs=sketch_multi, outputs=[out_boxes, out_text])
+    btn_multi2.click(predict_multi_digit, inputs=upload_multi, outputs=[out_boxes, out_text])
+
+demo_multi.launch(share=True, debug=True)
